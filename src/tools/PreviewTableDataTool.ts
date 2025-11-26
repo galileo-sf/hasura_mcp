@@ -11,9 +11,13 @@ Fetches a limited sample of rows from a specified table for preview purposes.
 Parameters:
   - tableName: The exact name of the table to preview
   - limit: Maximum number of rows to fetch (default: 5)
+  - offset: Number of rows to skip for pagination (default: 0)
 
 Returns:
-  - JSON object with table data containing scalar/enum fields only
+  - data: JSON object with table data containing scalar/enum fields only
+  - returnedCount: Number of rows returned
+  - limit: Current limit value
+  - offset: Current offset value
   - Complex nested objects and relationships are excluded from preview
 
 Note: Only scalar fields (String, Int, Boolean, etc.) and enum fields are included
@@ -22,6 +26,7 @@ in the preview. Use GraphQL queries directly for complex nested data.
   inputSchema = z.object({
     tableName: z.string().describe("The exact name of the table..."),
     limit: z.number().int().positive().optional().default(5).describe("Optional. Maximum number of rows..."),
+    offset: z.number().int().min(0).optional().default(0).describe("Optional. Number of rows to skip for pagination. Default: 0."),
   });
 
   constructor(
@@ -32,8 +37,8 @@ in the preview. Use GraphQL queries directly for complex nested data.
   }
 
   async execute(input: z.infer<typeof this.inputSchema>, _extra: any) {
-    const { tableName, limit } = input;
-    console.log(`[INFO] Executing tool 'preview_table_data' for table: ${tableName}, limit: ${limit}`);
+    const { tableName, limit = 5, offset = 0 } = input;
+    console.log(`[INFO] Executing tool 'preview_table_data' for table: ${tableName}, limit: ${limit}, offset: ${offset}`);
 
     try {
       const schema = await this.getIntrospectionSchema();
@@ -56,11 +61,20 @@ in the preview. Use GraphQL queries directly for complex nested data.
       }
 
       const fieldsString = scalarFields.join('\n          ');
-      const query = gql` query PreviewData($limit: Int!) { ${tableName}(limit: $limit) { ${fieldsString} } }`;
-      const variables = { limit };
+      const query = gql` query PreviewData($limit: Int!, $offset: Int!) { ${tableName}(limit: $limit, offset: $offset) { ${fieldsString} } }`;
+      const variables = { limit, offset };
       const result = await this.makeGqlRequest(query, variables);
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      // Extract the actual data and add pagination metadata
+      const tableData = result[tableName] || [];
+      const response = {
+        data: result,
+        returnedCount: Array.isArray(tableData) ? tableData.length : 0,
+        limit,
+        offset
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }] };
     } catch (error: any) {
       console.error(`[ERROR] Tool 'preview_table_data' failed: ${error.message}`);
       throw error;

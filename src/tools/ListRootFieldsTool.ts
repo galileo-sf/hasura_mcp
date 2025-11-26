@@ -64,10 +64,11 @@ Query/Mutation/Subscription types, which may require additional support.
       }
 
       // Check for other root types that might not be standard
+      // Only flag types ending with _root that aren't registered as standard root types
       const rootTypeNames = [schema.queryType?.name, schema.mutationType?.name, schema.subscriptionType?.name].filter(Boolean);
       const allRootTypes = schema.types.filter(t =>
         t.kind === 'OBJECT' &&
-        (t.name.toLowerCase().includes('root') || t.name.toLowerCase().includes('type')) &&
+        t.name.endsWith('_root') &&
         !rootTypeNames.includes(t.name) &&
         !t.name.startsWith('__')
       );

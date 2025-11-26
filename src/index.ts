@@ -10,6 +10,7 @@ import { PreviewTableDataTool } from "./tools/PreviewTableDataTool.js";
 import { AggregateDataTool } from "./tools/AggregateDataTool.js";
 import { HealthCheckTool } from "./tools/HealthCheckTool.js";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
+import { CheckUnsupportedRootTypesTool } from "./tools/CheckUnsupportedRootTypesTool.js";
 import {
     getIntrospectionQuery,
     IntrospectionQuery,
@@ -192,6 +193,14 @@ server.tool(
   describeTableTool.description,
   describeTableTool.inputSchema.shape,
   describeTableTool.execute
+);
+
+const checkUnsupportedRootTypesTool = new CheckUnsupportedRootTypesTool(getIntrospectionSchema);
+server.tool(
+  checkUnsupportedRootTypesTool.name,
+  checkUnsupportedRootTypesTool.description,
+  checkUnsupportedRootTypesTool.inputSchema.shape,
+  checkUnsupportedRootTypesTool.execute
 );
 
 async function main() {
