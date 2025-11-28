@@ -9,28 +9,33 @@ Executes a read-only GraphQL query against the Hasura endpoint.
 Parameters:
   - query: The GraphQL query string (must be a read-only operation, not a mutation)
   - variables: Object containing query variables (optional)
-  - limit: Maximum number of rows to return - automatically added to query (optional)
-  - offset: Number of rows to skip for pagination - automatically added to query (optional)
-  - forceBigQuery: Set to true to bypass the limit safety check (optional)
+  - forceBigQuery: Set to true to bypass automatic result trimming (optional)
 
 Returns:
   - JSON result of the GraphQL query execution
-  - If limit/offset are provided, they are automatically injected into variables
+  - If results contain arrays with more than 100 items, they will be automatically trimmed
+  - A warning will be added to the response if trimming occurred
 
 Note: This tool only supports read-only queries. Mutation operations will be rejected.
 Use 'run_graphql_mutation' for insert, update, or delete operations.
-Pagination parameters (limit/offset) are convenience helpers that merge into variables.
 
-IMPORTANT: For safety, queries require a limit <= 100 to prevent performance issues.
-If limit is undefined or > 100, the query will be rejected unless 'forceBigQuery: true' is set.
-This safety check helps avoid fetching excessive data that could cause timeouts or memory issues.
+IMPORTANT: Results are automatically trimmed to 100 rows per array to prevent excessive data.
+To avoid this warning and have full control, use pagination in your queries:
+
+Hasura Pagination Pattern:
+  query($limit: Int!, $offset: Int!) {
+    tableName(limit: $limit, offset: $offset) {
+      id
+      name
+    }
+  }
+
+Set 'forceBigQuery: true' to disable automatic trimming if you need all results.
   `.trim();
   inputSchema = z.object({
     query: z.string().describe("The GraphQL query string (must be a read-only operation)."),
-    variables: z.record(z.unknown()).optional().describe("Optional. An object containing variables..."),
-    limit: z.number().int().positive().optional().describe("Optional. Maximum number of rows to return. Automatically added to variables."),
-    offset: z.number().int().min(0).optional().describe("Optional. Number of rows to skip for pagination. Automatically added to variables."),
-    forceBigQuery: z.boolean().optional().describe("Optional. Set to true to allow queries without limit or with limit > 100."),
+    variables: z.record(z.unknown()).optional().describe("Optional. An object containing variables for your query."),
+    forceBigQuery: z.boolean().optional().describe("Optional. Set to true to disable automatic result trimming (allows unlimited results)."),
   });
 
   constructor(private makeGqlRequest: MakeGqlRequest) {
@@ -38,30 +43,63 @@ This safety check helps avoid fetching excessive data that could cause timeouts 
   }
 
   async execute(input: z.infer<typeof this.inputSchema>, _extra: any) {
-    const { query, variables, limit, offset, forceBigQuery = false } = input;
-    console.log(`[INFO] Executing tool 'run_graphql_query'${limit !== undefined ? `, limit: ${limit}` : ''}${offset !== undefined ? `, offset: ${offset}` : ''}`);
+    const { query, variables, forceBigQuery = false } = input;
+    console.log(`[INFO] Executing tool 'run_graphql_query'${forceBigQuery ? ' (forceBigQuery enabled)' : ''}`);
 
     if (query.trim().toLowerCase().startsWith('mutation')) {
       throw new Error("This tool only supports read-only queries...");
     }
 
-    // Safety check: enforce limit unless forceBigQuery is true
-    if (!forceBigQuery && (limit === undefined || limit > 100)) {
-      console.error(
-        `[ERROR] Tool 'run_graphql_query' safety check failed: limit=${limit}\n` +
-        `Queries require a limit <= 100 to prevent fetching excessive data and avoid performance issues.\n` +
-        `If you intentionally need to fetch more data, set 'forceBigQuery: true' in your request.`
-      );
-      throw new Error("Query requires limit <= 100. Set forceBigQuery=true to bypass this safety check.");
-    }
-
     try {
-      // Merge pagination parameters into variables
-      const mergedVariables = { ...variables };
-      if (limit !== undefined) mergedVariables.limit = limit;
-      if (offset !== undefined) mergedVariables.offset = offset;
+      const result = await this.makeGqlRequest(query, variables || {});
 
-      const result = await this.makeGqlRequest(query, mergedVariables);
+      // Trim results if forceBigQuery is false
+      if (!forceBigQuery) {
+        let trimmed = false;
+        const trimmedFields: string[] = [];
+
+        const trimResult = (obj: any, path: string = 'root'): any => {
+          if (Array.isArray(obj)) {
+            if (obj.length > 100) {
+              trimmed = true;
+              trimmedFields.push(`${path} (${obj.length} rows trimmed to 100)`);
+              return obj.slice(0, 100);
+            }
+            return obj.map((item, idx) => trimResult(item, `${path}[${idx}]`));
+          } else if (obj !== null && typeof obj === 'object') {
+            const trimmedObj: any = {};
+            for (const key in obj) {
+              trimmedObj[key] = trimResult(obj[key], path === 'root' ? key : `${path}.${key}`);
+            }
+            return trimmedObj;
+          }
+          return obj;
+        };
+
+        const trimmedResult = trimResult(result);
+
+        if (trimmed) {
+          console.warn(
+            `[WARN] Tool 'run_graphql_query' trimmed results:\n` +
+            trimmedFields.map(f => `  - ${f}`).join('\n') + '\n' +
+            `To avoid this, add pagination to your query: tableName(limit: $limit, offset: $offset)\n` +
+            `Or set 'forceBigQuery: true' to retrieve all results.`
+          );
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                ...trimmedResult,
+                _warning: `Results were automatically trimmed to 100 rows per array to prevent excessive data. Trimmed fields: ${trimmedFields.join(', ')}. Use pagination in your query (limit/offset) or set forceBigQuery=true to get all results.`
+              }, null, 2)
+            }]
+          };
+        }
+
+        return { content: [{ type: "text" as const, text: JSON.stringify(trimmedResult, null, 2) }] };
+      }
+
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (error: any) {
       console.error(`[ERROR] Tool 'run_graphql_query' failed: ${error.message}`);
